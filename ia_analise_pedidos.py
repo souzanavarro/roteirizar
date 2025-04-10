@@ -7,10 +7,12 @@ from geopy.distance import geodesic
 from sklearn.cluster import KMeans
 import folium
 from config import endereco_partida, endereco_partida_coords
-from config import GRAPH_HOPPER_API_KEY
 import math
 import pandas as pd
 import logging
+
+# Configurações de partida
+endereco_partida_coords = (-23.0838, -47.1336)  # Coordenadas do ponto de partida
 
 def obter_coordenadas_opencage(endereco):
     """
@@ -134,174 +136,68 @@ def resolver_tsp_genetico(G):
 
     return best_route, best_distance
 
-def obter_rota_graphhopper(pedidos_df, caminhoes_df, GRAPH_HOPPER_API_KEY):
+def obter_rota_osrm(coordenadas):
     """
-    Obtém uma rota otimizada usando a API do GraphHopper.
+    Obtém uma rota otimizada usando a API pública do OSRM.
     
     Args:
-        pedidos_df (DataFrame): DataFrame contendo os pedidos com Latitude e Longitude.
-        caminhoes_df (DataFrame): DataFrame contendo os veículos com capacidade.
-        chave_api (str): Chave de API do GraphHopper.
+        coordenadas (list): Lista de tuplas (latitude, longitude) representando os pontos.
     
     Returns:
-        dict: Dados da rota otimizada ou None em caso de erro.
+        list: Sequência de coordenadas otimizadas ou None em caso de erro.
     """
-    base_url = "https://graphhopper.com/api/1/vrp"
-    
-    # Criar a estrutura de entrada para a API
-    vehicles = []
-    for _, caminhao in caminhoes_df.iterrows():
-        vehicles.append({
-            "vehicle_id": caminhao['Placa'],
-            "start_address": {
-                "location_id": "depot",
-                "lon": endereco_partida_coords[1],
-                "lat": endereco_partida_coords[0]
-            },
-            "capacity": [int(caminhao['Capac. Kg']), int(caminhao['Capac. Cx'])],
-            "type_id": "default"
-        })
-    
-    services = []
-    for _, pedido in pedidos_df.iterrows():
-        services.append({
-            "id": str(pedido.name),
-            "name": pedido['Endereço Completo'],
-            "address": {
-                "location_id": str(pedido.name),
-                "lon": pedido['Longitude'],
-                "lat": pedido['Latitude']
-            },
-            "size": [int(pedido['Peso dos Itens']), int(pedido['Qtde. dos Itens'])]
-        })
-    
-    # Montar o payload
-    payload = {
-        "vehicles": vehicles,
-        "services": services
-    }
-    
-    headers = {
-        "Content-Type": "application/json"
-    }
-    
+    base_url = "https://router.project-osrm.org/route/v1/driving/"
+    coords = ";".join([f"{lng},{lat}" for lat, lng in coordenadas])  # Formato esperado: longitude,latitude
     params = {
-        "key": chave_api
+        "overview": "full",  # Retorna a rota completa
+        "geometries": "geojson",  # Formato das coordenadas
+        "steps": "false"  # Não incluir etapas detalhadas
     }
-    
-    # Fazer a requisição
-    response = requests.post(base_url, json=payload, headers=headers, params=params)
-    
+    response = requests.get(f"{base_url}{coords}", params=params)
     if response.status_code == 200:
-        return response.json()
-    else:
-        st.error(f"Erro na requisição: {response.status_code} - {response.text}")
-        return None
-
-def resolver_vrp(pedidos_df, caminhoes_df):
-    """
-    Resolve o problema do VRP utilizando OR-Tools.
-    
-    O algoritmo constrói uma matriz de distâncias com base nas coordenadas dos pedidos.
-    O número de veículos é determinado pelo número de caminhões disponíveis.
-    
-    Retorna:
-      dict: Rotas para cada veículo, ou
-      str: Mensagem de erro se a solução não for encontrada ou se OR-Tools não estiver instalado.
-    """
-    try:
-        from ortools.constraint_solver import routing_enums_pb2, pywrapcp
-    except ImportError:
-        return "Erro: OR-Tools não está instalado. Instale com: pip3 install ortools"
-
-    # Obtenha as coordenadas dos pedidos
-    coords = list(zip(pedidos_df['Latitude'], pedidos_df['Longitude']))
-    if not coords:
-        return "Sem pedidos para roteirização."
-
-    depot = 0  # Usando o primeiro pedido (ou defina um depot específico)
-
-    def calcular_dist(i, j):
-        return int(math.sqrt((coords[i][0] - coords[j][0])**2 + (coords[i][1] - coords[j][1])**2) * 1000)
-
-    N = len(coords)
-    distance_matrix = [[calcular_dist(i, j) for j in range(N)] for i in range(N)]
-
-    num_vehicles = len(caminhoes_df)
-    if num_vehicles < 1:
-        return "Nenhum caminhão disponível para a roteirização."
-
-    # Cria o index manager e o modelo de roteamento
-    manager = pywrapcp.RoutingIndexManager(N, num_vehicles, depot)
-    routing = pywrapcp.RoutingModel(manager)
-
-    def distance_callback(from_index, to_index):
-        from_node = manager.IndexToNode(from_index)
-        to_node = manager.IndexToNode(to_index)
-        return distance_matrix[from_node][to_node]
-
-    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-
-    # Parâmetros de busca
-    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-    search_parameters.first_solution_strategy = (routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
-
-    solution = routing.SolveWithParameters(search_parameters)
-    if solution:
-        routes = {}
-        for vehicle_id in range(num_vehicles):
-            index = routing.Start(vehicle_id)
-            route = []
-            while not routing.IsEnd(index):
-                node = manager.IndexToNode(index)
-                route.append(pedidos_df.iloc[node]['Endereço Completo'])
-                index = solution.Value(routing.NextVar(index))
-            routes[f"Veículo {vehicle_id + 1}"] = route
-
-        # Exibir as rotas
-        for veiculo, rota in routes.items():
-            st.write(f"{veiculo}: {rota}")
-
-        return routes
-    else:
-        return "Não foi encontrada solução para o problema VRP."
-
-def otimizar_aproveitamento_frota(pedidos_df, caminhoes_df, percentual_frota, max_pedidos, n_clusters, chave_api):
-    """
-    Otimiza a alocação dos pedidos aos caminhões disponíveis, agrupando os pedidos em regiões,
-    atribuindo números de carga e placas. Divide os pedidos entre vários veículos, se necessário.
-    """
-    pedidos_df['Carga'] = 0
-    pedidos_df['Placa'] = ""
-    carga_numero = 1
-
-    # Ajustar a capacidade dos caminhões conforme o percentual informado
-    caminhoes_df['Capac. Kg'] *= (percentual_frota / 100)
-    caminhoes_df['Capac. Cx'] *= (percentual_frota / 100)
-    caminhoes_df = caminhoes_df[caminhoes_df['Disponível'] == 'Ativo']
-
-    # Agrupar os pedidos em regiões
-    pedidos_df = agrupar_por_regiao(pedidos_df, n_clusters)
-
-    # Iterar sobre cada região
-    for regiao in pedidos_df['Regiao'].unique():
-        pedidos_regiao = pedidos_df[pedidos_df['Regiao'] == regiao]
-        chave_api = "251e3452-13e3-4229-807a-45760bdf1207"
-        rota_otimizada = obter_rota_graphhopper(pedidos_df, caminhoes_df, chave_api)
-
-        if rota_otimizada:
-            for rota in rota_otimizada['solution']['routes']:
-                veiculo_id = rota['vehicle_id']
-                for atividade in rota['activities']:
-                    pedido_id = int(atividade['id'])
-                    pedidos_df.loc[pedido_id, 'Carga'] = carga_numero
-                    pedidos_df.loc[pedido_id, 'Placa'] = veiculo_id
-                carga_numero += 1
+        data = response.json()
+        if "routes" in data and len(data["routes"]) > 0:
+            rota = data["routes"][0]["geometry"]["coordinates"]
+            return rota
         else:
-            st.error(f"Falha ao obter as rotas otimizadas para a região {regiao}.")
+            st.error("Não foi possível calcular a rota.")
+    else:
+        st.error(f"Erro na requisição: {response.status_code}")
+    return None
 
-    return pedidos_df
+def obter_rota_valhalla(coordenadas):
+    """
+    Obtém uma rota otimizada usando a API pública do Valhalla.
+    
+    Args:
+        coordenadas (list): Lista de tuplas (latitude, longitude) representando os pontos.
+    
+    Returns:
+        list: Sequência de coordenadas otimizadas ou None em caso de erro.
+    """
+    base_url = "https://valhalla1.openstreetmap.de/route"
+    locations = [{"lat": lat, "lon": lng} for lat, lng in coordenadas]
+    payload = {
+        "locations": locations,
+        "costing": "auto",  # Tipo de veículo (carro)
+        "directions_options": {"units": "kilometers"}
+    }
+    headers = {"Content-Type": "application/json"}
+    
+    response = requests.post(base_url, json=payload, headers=headers)
+    if response.status_code == 200:
+        data = response.json()
+        if "trip" in data and "legs" in data["trip"]:
+            rota = []
+            for leg in data["trip"]["legs"]:
+                for step in leg["shape"]:
+                    rota.append(step)
+            return rota
+        else:
+            st.error("Não foi possível calcular a rota com Valhalla.")
+    else:
+        st.error(f"Erro na requisição: {response.status_code}")
+    return None
 
 def agrupar_por_regiao(pedidos_df, n_clusters):
     """
@@ -334,8 +230,52 @@ def agrupar_por_regiao(pedidos_df, n_clusters):
             if clusters == 1:
                 pedidos_df.loc[cidade_df.index, 'Regiao'] = 0
             else:
-                kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+                kmeans = KMeans(n_clusters=clusters, random_state=42)
                 pedidos_df.loc[cidade_df.index, 'Regiao'] = kmeans.fit_predict(coords)
+
+    return pedidos_df
+
+def otimizar_aproveitamento_frota(pedidos_df, caminhoes_df, percentual_frota, max_pedidos, n_clusters):
+    """
+    Otimiza a alocação dos pedidos aos caminhões disponíveis, agrupando os pedidos em regiões,
+    atribuindo números de carga e placas. Divide os pedidos entre vários veículos, se necessário.
+    """
+    pedidos_df['Carga'] = 0
+    pedidos_df['Placa'] = ""
+    carga_numero = 1
+
+    # Ajustar a capacidade dos caminhões conforme o percentual informado
+    caminhoes_df['Capac. Kg'] *= (percentual_frota / 100)
+    caminhoes_df['Capac. Cx'] *= (percentual_frota / 100)
+    caminhoes_df = caminhoes_df[caminhoes_df['Disponível'] == 'Ativo']
+
+    # Agrupar os pedidos em regiões
+    pedidos_df = agrupar_por_regiao(pedidos_df, n_clusters)
+
+    # Iterar sobre cada região
+    for regiao in pedidos_df['Regiao'].unique():
+        pedidos_regiao = pedidos_df[pedidos_df['Regiao'] == regiao]
+        coordenadas = [(endereco_partida_coords[0], endereco_partida_coords[1])] + \
+                      list(zip(pedidos_regiao['Latitude'], pedidos_regiao['Longitude']))
+        
+        # Obter rota otimizada com OSRM
+        rota_otimizada = obter_rota_osrm(coordenadas)
+
+        if rota_otimizada:
+            st.write(f"Rota otimizada para a região {regiao}: {rota_otimizada}")
+            
+            # Atribuir os pedidos à rota com base na placa do veículo
+            for i, pedido_index in enumerate(pedidos_regiao.index):
+                if i < len(caminhoes_df):  # Garantir que há caminhões disponíveis
+                    placa = caminhoes_df.iloc[i]['Placa']
+                    pedidos_df.loc[pedido_index, 'Carga'] = carga_numero
+                    pedidos_df.loc[pedido_index, 'Placa'] = placa
+                else:
+                    st.error("Não há caminhões suficientes para atender todos os pedidos.")
+                    break
+            carga_numero += 1
+        else:
+            st.error(f"Falha ao obter a rota otimizada para a região {regiao}.")
 
     return pedidos_df
 
@@ -375,3 +315,108 @@ def analisar_roterizacao_manual():
     except Exception as e:
         st.error(f"Erro ao analisar o arquivo: {e}")
         return None, None
+
+def resolver_vrp(pedidos_df, caminhoes_df):
+    """
+    Resolve o problema de roteirização de veículos (VRP) usando OSRM.
+    
+    Args:
+        pedidos_df (DataFrame): DataFrame contendo os pedidos com Latitude e Longitude.
+        caminhoes_df (DataFrame): DataFrame contendo os veículos com capacidade.
+    
+    Returns:
+        dict: Rotas otimizadas para cada veículo ou mensagem de erro.
+    """
+    try:
+        # Verificar se há pedidos e veículos disponíveis
+        if pedidos_df.empty or caminhoes_df.empty:
+            st.error("Nenhum pedido ou veículo disponível para roteirização.")
+            return None
+
+        # Tratar valores NaN em 'Peso dos Itens' e 'Capac. Kg'
+        pedidos_df['Peso dos Itens'] = pedidos_df['Peso dos Itens'].fillna(0)  # Substituir NaN por 0
+        caminhoes_df['Capac. Kg'] = caminhoes_df['Capac. Kg'].fillna(0)  # Substituir NaN por 0
+
+        # Obter as coordenadas dos pedidos
+        coordenadas_pedidos = list(zip(pedidos_df['Latitude'], pedidos_df['Longitude']))
+        coordenadas_depot = [endereco_partida_coords]  # Coordenadas do ponto de partida
+
+        # Criar a matriz de distância usando OSRM
+        base_url = "https://router.project-osrm.org/table/v1/driving/"
+        coords = ";".join([f"{lng},{lat}" for lat, lng in coordenadas_depot + coordenadas_pedidos])
+        response = requests.get(f"{base_url}{coords}?annotations=distance")
+        if response.status_code != 200:
+            st.error(f"Erro ao obter a matriz de distância: {response.status_code}")
+            return None
+
+        data = response.json()
+        distance_matrix = data['distances']
+
+        # Configurar o problema de VRP
+        from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+
+        num_pedidos = int(len(coordenadas_pedidos))  # Garantir que seja um inteiro
+        num_veiculos = int(len(caminhoes_df))  # Garantir que seja um inteiro
+        depot_index = 0
+
+        # Criar o gerenciador de índices
+        manager = pywrapcp.RoutingIndexManager(len(distance_matrix), num_veiculos, depot_index)
+
+        # Criar o modelo de roteirização
+        routing = pywrapcp.RoutingModel(manager)
+
+        # Função de custo (distância)
+        def distance_callback(from_index, to_index):
+            from_node = manager.IndexToNode(from_index)
+            to_node = manager.IndexToNode(to_index)
+            return distance_matrix[from_node][to_node]
+
+        transit_callback_index = routing.RegisterTransitCallback(distance_callback)
+        routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+
+        # Adicionar restrições de capacidade
+        demands = [0] + list(map(int, pedidos_df['Peso dos Itens']))  # Converter para inteiros
+        capacities = list(map(int, caminhoes_df['Capac. Kg']))  # Converter para inteiros
+
+        def demand_callback(from_index):
+            from_node = manager.IndexToNode(from_index)
+            return demands[from_node]
+
+        demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
+        routing.AddDimensionWithVehicleCapacity(
+            demand_callback_index,
+            0,  # Sem capacidade extra
+            capacities,  # Capacidades dos veículos
+            True,  # Início cumulativo
+            "Capacity"
+        )
+
+        # Configurar parâmetros de busca
+        search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+        search_parameters.first_solution_strategy = (
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
+
+        # Resolver o problema
+        solution = routing.SolveWithParameters(search_parameters)
+
+        if not solution:
+            st.error("Não foi possível encontrar uma solução para o VRP.")
+            return None
+
+        # Extrair as rotas
+        rotas = {}
+        for vehicle_id in range(num_veiculos):
+            index = routing.Start(vehicle_id)
+            rota = []
+            while not routing.IsEnd(index):
+                node_index = manager.IndexToNode(index)
+                if node_index != depot_index:  # Ignorar o depósito
+                    rota.append(pedidos_df.iloc[node_index - 1]['Endereço Completo'])
+                index = solution.Value(routing.NextVar(index))
+            rotas[f"Veículo {vehicle_id + 1}"] = rota
+
+        return rotas
+
+    except Exception as e:
+        st.error(f"Erro ao resolver o VRP: {e}")
+        return None

@@ -42,6 +42,50 @@ def definir_ordem_por_carga(pedidos_df, ordem_tsp):
     
     return pedidos_df
 
+def otimizar_aproveitamento_frota(pedidos_df, caminhoes_df, percentual_frota, max_pedidos, n_clusters):
+    """
+    Otimiza a alocação dos pedidos aos caminhões disponíveis, agrupando os pedidos em regiões,
+    atribuindo números de carga e placas. Divide os pedidos entre vários veículos, se necessário.
+    """
+    pedidos_df['Carga'] = 0
+    pedidos_df['Placa'] = ""
+    carga_numero = 1
+
+    # Ajustar a capacidade dos caminhões conforme o percentual informado
+    caminhoes_df['Capac. Kg'] *= (percentual_frota / 100)
+    caminhoes_df['Capac. Cx'] *= (percentual_frota / 100)
+    caminhoes_df = caminhoes_df[caminhoes_df['Disponível'] == 'Ativo']
+
+    # Agrupar os pedidos em regiões
+    pedidos_df = agrupar_por_regiao(pedidos_df, n_clusters)
+
+    # Iterar sobre cada região
+    for regiao in pedidos_df['Regiao'].unique():
+        pedidos_regiao = pedidos_df[pedidos_df['Regiao'] == regiao]
+        coordenadas = [(endereco_partida_coords[0], endereco_partida_coords[1])] + \
+                      list(zip(pedidos_regiao['Latitude'], pedidos_regiao['Longitude']))
+        
+        # Obter rota otimizada com OSRM
+        rota_otimizada = obter_rota_osrm(coordenadas)
+
+        if rota_otimizada:
+            st.write(f"Rota otimizada para a região {regiao}: {rota_otimizada}")
+            
+            # Atribuir os pedidos à rota com base na placa do veículo
+            for i, pedido_index in enumerate(pedidos_regiao.index):
+                if i < len(caminhoes_df):  # Garantir que há caminhões disponíveis
+                    placa = caminhoes_df.iloc[i]['Placa']
+                    pedidos_df.loc[pedido_index, 'Carga'] = carga_numero
+                    pedidos_df.loc[pedido_index, 'Placa'] = placa
+                else:
+                    st.error("Não há caminhões suficientes para atender todos os pedidos.")
+                    break
+            carga_numero += 1
+        else:
+            st.error(f"Falha ao obter a rota otimizada para a região {regiao}.")
+
+    return pedidos_df
+
 def main():
     st.title("Roteirizador de Pedidos")
     
@@ -148,7 +192,12 @@ def main():
                 
                 if aplicar_vrp:
                     rota_vrp = ia.resolver_vrp(pedidos_df, caminhoes_df)
-                    st.write(f"Melhor rota VRP: {rota_vrp}")
+
+                    if rota_vrp:
+                        for veiculo, rota in rota_vrp.items():
+                            st.write(f"{veiculo}: {rota}")
+                    else:
+                        st.error("Falha ao resolver o problema de roteirização de veículos.")
                 
                 st.write("Dados dos Pedidos:")
                 st.dataframe(pedidos_df)
@@ -166,11 +215,10 @@ def main():
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     
-            st.markdown("**Edite a planilha de Pedidos, se necessário:**")
-            dados_editados = st.data_editor(pedidos_df, num_rows="dynamic")
-            if st.button("Salvar alterações na planilha"):
-                dados_editados.to_excel("database/Pedidos.xlsx", index=False)
-                st.success("Planilha editada e salva com sucesso!")
+                st.success("Roteirização concluída com sucesso!")
+                st.balloons()
+                st.write("Acesse o mapa interativo acima para visualizar as rotas.")
+                st.write("Acesse a planilha de resultados para mais detalhes.")
     
     elif menu_opcao == "Cadastro da Frota":
         st.header("Cadastro da Frota")

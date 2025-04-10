@@ -5,6 +5,7 @@ Configuração do sistema de roteirização
 - Utiliza variáveis de ambiente para informações sensíveis (por exemplo, chave da API).
 """
 
+# Configuração do sistema de roteirização
 import os
 
 DATABASE_FOLDER = "database"
@@ -18,6 +19,3 @@ OPENCAGE_API_KEY = os.environ.get("OPENCAGE_API_KEY", "6f522c67add14152926990afb
 # Parâmetros de rota de partida
 endereco_partida = "Avenida Antonio Ortega, 3604 - Pinhal, Cabreúva - SP, São Paulo, Brasil"
 endereco_partida_coords = (-23.0838, -47.1336)
-
-# Chave da API do GraphHopper
-GRAPH_HOPPER_API_KEY = "251e3452-13e3-4229-807a-45760bdf1207"
