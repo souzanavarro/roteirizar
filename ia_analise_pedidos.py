@@ -238,10 +238,15 @@ def agrupar_por_regiao(pedidos_df, n_clusters):
     Agrupa os pedidos em regiões usando K-Means com base nas colunas de Latitude e Longitude.
     Adiciona/atualiza a coluna "Regiao" no DataFrame.
     """
-    if pedidos_df.empty:
-        pedidos_df['Regiao'] = []
-        return pedidos_df
+    # Filtrar coordenadas inválidas
+    pedidos_df = pedidos_df.dropna(subset=['Latitude', 'Longitude'])
     coords = pedidos_df[['Latitude', 'Longitude']].values
+
+    # Verificar se há coordenadas suficientes para agrupar
+    if len(coords) < n_clusters:
+        raise ValueError("Número de coordenadas válidas é menor que o número de clusters solicitado.")
+
+    # Aplicar KMeans
     kmeans = KMeans(n_clusters=n_clusters, random_state=42)
     pedidos_df['Regiao'] = kmeans.fit_predict(coords)
     return pedidos_df
