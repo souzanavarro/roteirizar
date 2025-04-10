@@ -126,6 +126,11 @@ def resolver_tsp_genetico(G):
     nodes = list(G.nodes)
     population = [random.sample(nodes, len(nodes)) for _ in range(100)]
     best_route, best_distance = genetic_algorithm(population)
+
+    # Aplicar a rota aos pedidos
+    st.write(f"Melhor rota TSP: {best_route}")
+    st.write(f"Distância total: {best_distance:.2f} metros")
+
     return best_route, best_distance
 
 def resolver_vrp(pedidos_df, caminhoes_df):
@@ -188,6 +193,11 @@ def resolver_vrp(pedidos_df, caminhoes_df):
                 route.append(pedidos_df.iloc[node]['Endereço Completo'])
                 index = solution.Value(routing.NextVar(index))
             routes[f"Veículo {vehicle_id + 1}"] = route
+
+        # Exibir as rotas
+        for veiculo, rota in routes.items():
+            st.write(f"{veiculo}: {rota}")
+
         return routes
     else:
         return "Não foi encontrada solução para o problema VRP."
@@ -195,60 +205,121 @@ def resolver_vrp(pedidos_df, caminhoes_df):
 def otimizar_aproveitamento_frota(pedidos_df, caminhoes_df, percentual_frota, max_pedidos, n_clusters):
     """
     Otimiza a alocação dos pedidos aos caminhões disponíveis, agrupando os pedidos em regiões,
-    atribuindo números de carga e placas.
+    atribuindo números de carga e placas. Divide os pedidos entre vários veículos, se necessário.
     """
-    # Inicializa as colunas
     pedidos_df['Carga'] = 0
     pedidos_df['Placa'] = ""
     carga_numero = 1
-    
-    # Ajusta a capacidade dos caminhões conforme o percentual informado
+
+    # Ajustar a capacidade dos caminhões conforme o percentual informado
     caminhoes_df['Capac. Kg'] *= (percentual_frota / 100)
     caminhoes_df['Capac. Cx'] *= (percentual_frota / 100)
-    # Filtra somente caminhões com disponibilidade "Ativo"
     caminhoes_df = caminhoes_df[caminhoes_df['Disponível'] == 'Ativo']
-    
-    # Agrupa os pedidos em regiões
+
+    # Agrupar os pedidos em regiões
     pedidos_df = agrupar_por_regiao(pedidos_df, n_clusters)
-    
+
+    # Iterar sobre cada região
     for regiao in pedidos_df['Regiao'].unique():
         pedidos_regiao = pedidos_df[pedidos_df['Regiao'] == regiao]
+        pedidos_nao_alocados = pedidos_regiao.copy()
+
+        # Ordenar caminhões por capacidade (priorizar menores primeiro)
+        caminhoes_df = caminhoes_df.sort_values(by=['Capac. Kg', 'Capac. Cx'])
+
+        # Iterar sobre cada caminhão
         for _, caminhao in caminhoes_df.iterrows():
             capacidade_peso = caminhao['Capac. Kg']
             capacidade_caixas = caminhao['Capac. Cx']
-            pedidos_alocados = pedidos_regiao[
-                (pedidos_regiao['Peso dos Itens'] <= capacidade_peso) &
-                (pedidos_regiao['Qtde. dos Itens'] <= capacidade_caixas)
-            ]
-            pedidos_alocados = pedidos_alocados.sample(n=min(max_pedidos, len(pedidos_alocados)))
-            if not pedidos_alocados.empty:
-                pedidos_df.loc[pedidos_alocados.index, 'Carga'] = carga_numero
-                pedidos_df.loc[pedidos_alocados.index, 'Placa'] = caminhao['Placa']
-                capacidade_peso -= pedidos_alocados['Peso dos Itens'].sum()
-                capacidade_caixas -= pedidos_alocados['Qtde. dos Itens'].sum()
+
+            pedidos_alocados = []
+            for _, pedido in pedidos_nao_alocados.iterrows():
+                if (pedido['Peso dos Itens'] <= capacidade_peso and 
+                    pedido['Qtde. dos Itens'] <= capacidade_caixas):
+                    pedidos_alocados.append(pedido.name)
+                    capacidade_peso -= pedido['Peso dos Itens']
+                    capacidade_caixas -= pedido['Qtde. dos Itens']
+
+            # Atualizar os pedidos alocados
+            if pedidos_alocados:
+                pedidos_df.loc[pedidos_alocados, 'Carga'] = carga_numero
+                pedidos_df.loc[pedidos_alocados, 'Placa'] = caminhao['Placa']
                 carga_numero += 1
-    
+                pedidos_nao_alocados = pedidos_nao_alocados.drop(index=pedidos_alocados)
+
+            # Se todos os pedidos foram alocados, sair do loop
+            if pedidos_nao_alocados.empty:
+                break
+
+        # Dividir os pedidos restantes entre outros veículos, se necessário
+        while not pedidos_nao_alocados.empty:
+            for _, caminhao in caminhoes_df.iterrows():
+                capacidade_peso = caminhao['Capac. Kg']
+                capacidade_caixas = caminhao['Capac. Cx']
+
+                pedidos_alocados = []
+                for _, pedido in pedidos_nao_alocados.iterrows():
+                    if (pedido['Peso dos Itens'] <= capacidade_peso and 
+                        pedido['Qtde. dos Itens'] <= capacidade_caixas):
+                        pedidos_alocados.append(pedido.name)
+                        capacidade_peso -= pedido['Peso dos Itens']
+                        capacidade_caixas -= pedido['Qtde. dos Itens']
+
+                # Atualizar os pedidos alocados
+                if pedidos_alocados:
+                    pedidos_df.loc[pedidos_alocados, 'Carga'] = carga_numero
+                    pedidos_df.loc[pedidos_alocados, 'Placa'] = caminhao['Placa']
+                    carga_numero += 1
+                    pedidos_nao_alocados = pedidos_nao_alocados.drop(index=pedidos_alocados)
+
+                # Se todos os pedidos foram alocados, sair do loop
+                if pedidos_nao_alocados.empty:
+                    break
+
+        # Verificar se ainda há pedidos não alocados
+        if not pedidos_nao_alocados.empty:
+            st.error(f"Não foi possível alocar todos os pedidos da região {regiao}. Verifique as restrições de capacidade.")
+
+    # Verificar se ainda há pedidos não alocados em geral
     if pedidos_df['Placa'].isnull().any() or pedidos_df['Carga'].isnull().any():
         st.error("Não foi possível atribuir placas ou números de carga a alguns pedidos.")
-    
+
     return pedidos_df
 
 def agrupar_por_regiao(pedidos_df, n_clusters):
     """
-    Agrupa os pedidos em regiões usando K-Means com base nas colunas de Latitude e Longitude.
-    Adiciona/atualiza a coluna "Regiao" no DataFrame.
+    Agrupa os pedidos em regiões usando K-Means com base em Latitude, Longitude,
+    Cidade de Entrega e, se aplicável, Bairro de Entrega.
     """
-    # Filtrar coordenadas inválidas
-    pedidos_df = pedidos_df.dropna(subset=['Latitude', 'Longitude'])
-    coords = pedidos_df[['Latitude', 'Longitude']].values
+    pedidos_df = pedidos_df.dropna(subset=['Latitude', 'Longitude', 'Cidade de Entrega'])
+    pedidos_df['Regiao'] = -1  # Inicializa com -1 para pedidos não agrupados
 
-    # Verificar se há coordenadas suficientes para agrupar
-    if len(coords) < n_clusters:
-        raise ValueError("Número de coordenadas válidas é menor que o número de clusters solicitado.")
+    for cidade in pedidos_df['Cidade de Entrega'].unique():
+        if cidade == "São Paulo":
+            # Agrupar também por Bairro de Entrega
+            for bairro in pedidos_df[pedidos_df['Cidade de Entrega'] == cidade]['Bairro de Entrega'].unique():
+                bairro_df = pedidos_df[(pedidos_df['Cidade de Entrega'] == cidade) & 
+                                        (pedidos_df['Bairro de Entrega'] == bairro)]
+                coords = bairro_df[['Latitude', 'Longitude']].values
+                clusters = min(n_clusters, len(coords)) if len(coords) > 1 else 1
 
-    # Aplicar KMeans
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-    pedidos_df['Regiao'] = kmeans.fit_predict(coords)
+                if clusters == 1:
+                    pedidos_df.loc[bairro_df.index, 'Regiao'] = 0
+                else:
+                    kmeans = KMeans(n_clusters=clusters, random_state=42)
+                    pedidos_df.loc[bairro_df.index, 'Regiao'] = kmeans.fit_predict(coords)
+        else:
+            # Agrupar apenas por Cidade de Entrega
+            cidade_df = pedidos_df[pedidos_df['Cidade de Entrega'] == cidade]
+            coords = cidade_df[['Latitude', 'Longitude']].values
+            clusters = min(n_clusters, len(coords)) if len(coords) > 1 else 1
+
+            if clusters == 1:
+                pedidos_df.loc[cidade_df.index, 'Regiao'] = 0
+            else:
+                kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+                pedidos_df.loc[cidade_df.index, 'Regiao'] = kmeans.fit_predict(coords)
+
     return pedidos_df
 
 def criar_mapa(pedidos_df):
@@ -269,3 +340,21 @@ def criar_mapa(pedidos_df):
         icon=folium.Icon(color='red')
     ).add_to(mapa)
     return mapa
+
+def analisar_roterizacao_manual():
+    """
+    Analisa o arquivo roterizacao_dados.xlsx na pasta database para entender o padrão de montagem de cargas.
+    Retorna a última sequência de número de carga e o DataFrame analisado.
+    """
+    filepath = "./database/roterizacao_dados.xlsx"  # Caminho do arquivo
+    try:
+        df = pd.read_excel(filepath)
+        ultima_carga = df['Carga'].max()  # Obtém o maior número de carga
+        st.write(f"Última sequência de carga encontrada: {ultima_carga}")
+        return ultima_carga, df
+    except FileNotFoundError:
+        st.error(f"Arquivo {filepath} não encontrado. Certifique-se de que ele está na pasta correta.")
+        return None, None
+    except Exception as e:
+        st.error(f"Erro ao analisar o arquivo: {e}")
+        return None, None
