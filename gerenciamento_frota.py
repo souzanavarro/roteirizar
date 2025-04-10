@@ -24,7 +24,7 @@ def cadastrar_caminhoes():
         
         # Exclui placas indesejadas
         placas_excluir = ["FLB1111", "FLB2222", "FLB3333", "FLB4444",
-                           "FLB5555", "FLB6666", "FLB7777", "FLB8888", "FLB9999"]
+                           "FLB5555", "FLB6666", "FLB7777", "FLB8888", "FLB9999", "HFU1B60"]
         novo_caminhoes_df = novo_caminhoes_df[~novo_caminhoes_df['Placa'].isin(placas_excluir)]
         
         if st.button("Carregar Frota"):

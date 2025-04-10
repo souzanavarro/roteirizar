@@ -7,6 +7,7 @@ from geopy.distance import geodesic
 from sklearn.cluster import KMeans
 import folium
 from config import endereco_partida, endereco_partida_coords
+from config import GRAPH_HOPPER_API_KEY
 import math
 import pandas as pd
 import logging
@@ -133,6 +134,70 @@ def resolver_tsp_genetico(G):
 
     return best_route, best_distance
 
+def obter_rota_graphhopper(pedidos_df, caminhoes_df, GRAPH_HOPPER_API_KEY):
+    """
+    Obtém uma rota otimizada usando a API do GraphHopper.
+    
+    Args:
+        pedidos_df (DataFrame): DataFrame contendo os pedidos com Latitude e Longitude.
+        caminhoes_df (DataFrame): DataFrame contendo os veículos com capacidade.
+        chave_api (str): Chave de API do GraphHopper.
+    
+    Returns:
+        dict: Dados da rota otimizada ou None em caso de erro.
+    """
+    base_url = "https://graphhopper.com/api/1/vrp"
+    
+    # Criar a estrutura de entrada para a API
+    vehicles = []
+    for _, caminhao in caminhoes_df.iterrows():
+        vehicles.append({
+            "vehicle_id": caminhao['Placa'],
+            "start_address": {
+                "location_id": "depot",
+                "lon": endereco_partida_coords[1],
+                "lat": endereco_partida_coords[0]
+            },
+            "capacity": [int(caminhao['Capac. Kg']), int(caminhao['Capac. Cx'])],
+            "type_id": "default"
+        })
+    
+    services = []
+    for _, pedido in pedidos_df.iterrows():
+        services.append({
+            "id": str(pedido.name),
+            "name": pedido['Endereço Completo'],
+            "address": {
+                "location_id": str(pedido.name),
+                "lon": pedido['Longitude'],
+                "lat": pedido['Latitude']
+            },
+            "size": [int(pedido['Peso dos Itens']), int(pedido['Qtde. dos Itens'])]
+        })
+    
+    # Montar o payload
+    payload = {
+        "vehicles": vehicles,
+        "services": services
+    }
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    params = {
+        "key": chave_api
+    }
+    
+    # Fazer a requisição
+    response = requests.post(base_url, json=payload, headers=headers, params=params)
+    
+    if response.status_code == 200:
+        return response.json()
+    else:
+        st.error(f"Erro na requisição: {response.status_code} - {response.text}")
+        return None
+
 def resolver_vrp(pedidos_df, caminhoes_df):
     """
     Resolve o problema do VRP utilizando OR-Tools.
@@ -202,7 +267,7 @@ def resolver_vrp(pedidos_df, caminhoes_df):
     else:
         return "Não foi encontrada solução para o problema VRP."
 
-def otimizar_aproveitamento_frota(pedidos_df, caminhoes_df, percentual_frota, max_pedidos, n_clusters):
+def otimizar_aproveitamento_frota(pedidos_df, caminhoes_df, percentual_frota, max_pedidos, n_clusters, chave_api):
     """
     Otimiza a alocação dos pedidos aos caminhões disponíveis, agrupando os pedidos em regiões,
     atribuindo números de carga e placas. Divide os pedidos entre vários veículos, se necessário.
@@ -222,67 +287,19 @@ def otimizar_aproveitamento_frota(pedidos_df, caminhoes_df, percentual_frota, ma
     # Iterar sobre cada região
     for regiao in pedidos_df['Regiao'].unique():
         pedidos_regiao = pedidos_df[pedidos_df['Regiao'] == regiao]
-        pedidos_nao_alocados = pedidos_regiao.copy()
+        chave_api = "251e3452-13e3-4229-807a-45760bdf1207"
+        rota_otimizada = obter_rota_graphhopper(pedidos_df, caminhoes_df, chave_api)
 
-        # Ordenar caminhões por capacidade (priorizar menores primeiro)
-        caminhoes_df = caminhoes_df.sort_values(by=['Capac. Kg', 'Capac. Cx'])
-
-        # Iterar sobre cada caminhão
-        for _, caminhao in caminhoes_df.iterrows():
-            capacidade_peso = caminhao['Capac. Kg']
-            capacidade_caixas = caminhao['Capac. Cx']
-
-            pedidos_alocados = []
-            for _, pedido in pedidos_nao_alocados.iterrows():
-                if (pedido['Peso dos Itens'] <= capacidade_peso and 
-                    pedido['Qtde. dos Itens'] <= capacidade_caixas):
-                    pedidos_alocados.append(pedido.name)
-                    capacidade_peso -= pedido['Peso dos Itens']
-                    capacidade_caixas -= pedido['Qtde. dos Itens']
-
-            # Atualizar os pedidos alocados
-            if pedidos_alocados:
-                pedidos_df.loc[pedidos_alocados, 'Carga'] = carga_numero
-                pedidos_df.loc[pedidos_alocados, 'Placa'] = caminhao['Placa']
+        if rota_otimizada:
+            for rota in rota_otimizada['solution']['routes']:
+                veiculo_id = rota['vehicle_id']
+                for atividade in rota['activities']:
+                    pedido_id = int(atividade['id'])
+                    pedidos_df.loc[pedido_id, 'Carga'] = carga_numero
+                    pedidos_df.loc[pedido_id, 'Placa'] = veiculo_id
                 carga_numero += 1
-                pedidos_nao_alocados = pedidos_nao_alocados.drop(index=pedidos_alocados)
-
-            # Se todos os pedidos foram alocados, sair do loop
-            if pedidos_nao_alocados.empty:
-                break
-
-        # Dividir os pedidos restantes entre outros veículos, se necessário
-        while not pedidos_nao_alocados.empty:
-            for _, caminhao in caminhoes_df.iterrows():
-                capacidade_peso = caminhao['Capac. Kg']
-                capacidade_caixas = caminhao['Capac. Cx']
-
-                pedidos_alocados = []
-                for _, pedido in pedidos_nao_alocados.iterrows():
-                    if (pedido['Peso dos Itens'] <= capacidade_peso and 
-                        pedido['Qtde. dos Itens'] <= capacidade_caixas):
-                        pedidos_alocados.append(pedido.name)
-                        capacidade_peso -= pedido['Peso dos Itens']
-                        capacidade_caixas -= pedido['Qtde. dos Itens']
-
-                # Atualizar os pedidos alocados
-                if pedidos_alocados:
-                    pedidos_df.loc[pedidos_alocados, 'Carga'] = carga_numero
-                    pedidos_df.loc[pedidos_alocados, 'Placa'] = caminhao['Placa']
-                    carga_numero += 1
-                    pedidos_nao_alocados = pedidos_nao_alocados.drop(index=pedidos_alocados)
-
-                # Se todos os pedidos foram alocados, sair do loop
-                if pedidos_nao_alocados.empty:
-                    break
-
-        # Verificar se ainda há pedidos não alocados
-        if not pedidos_nao_alocados.empty:
-            st.error(f"Não foi possível alocar todos os pedidos da região {regiao}. Verifique as restrições de capacidade.")
-
-    # Verificar se ainda há pedidos não alocados em geral
-    if pedidos_df['Placa'].isnull().any() or pedidos_df['Carga'].isnull().any():
-        st.error("Não foi possível atribuir placas ou números de carga a alguns pedidos.")
+        else:
+            st.error(f"Falha ao obter as rotas otimizadas para a região {regiao}.")
 
     return pedidos_df
 
