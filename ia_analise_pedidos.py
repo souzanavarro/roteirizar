@@ -54,9 +54,13 @@ def calcular_distancia(coords_1, coords_2):
     """
     Calcula a distância em metros entre duas coordenadas.
     """
-    if coords_1 and coords_2:
-        return geodesic(coords_1, coords_2).meters
-    return None
+    # Validação das coordenadas
+    if not (-90 <= coords_1[0] <= 90 and -180 <= coords_1[1] <= 180):
+        raise ValueError(f"Coordenadas inválidas: {coords_1}")
+    if not (-90 <= coords_2[0] <= 90 and -180 <= coords_2[1] <= 180):
+        raise ValueError(f"Coordenadas inválidas: {coords_2}")
+    
+    return geodesic(coords_1, coords_2).meters
 
 def criar_grafo_tsp(pedidos_df):
     """

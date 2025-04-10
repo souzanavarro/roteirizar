@@ -88,6 +88,13 @@ def main():
             pedidos_df['Longitude'] = pedidos_df['Longitude'].fillna(0)
             salvar_coordenadas(coordenadas_salvas)
             
+            pedidos_df['Latitude'] = pedidos_df['Latitude'].apply(
+                lambda x: x if -90 <= x <= 90 else None
+            )
+            pedidos_df['Longitude'] = pedidos_df['Longitude'].apply(
+                lambda x: x if -180 <= x <= 180 else None
+            )
+            
             st.dataframe(pedidos_df)
             st.write("Cabeçalho da planilha:", list(pedidos_df.columns))
             
