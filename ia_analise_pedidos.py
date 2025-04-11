@@ -7,10 +7,9 @@ from itertools import permutations
 from geopy.distance import geodesic
 from sklearn.cluster import KMeans
 import folium
-import math
 import pandas as pd
 import logging
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional
 
 # Configuração de logs
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -18,6 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Configurações de partida
 endereco_partida_coords = (-23.0838, -47.1336)  # Coordenadas do ponto de partida
 
+@st.cache_data
 def obter_coordenadas_opencage(endereco: str) -> Optional[Tuple[float, float]]:
     """
     Obtém as coordenadas de um endereço utilizando a API do OpenCage.
@@ -25,7 +25,6 @@ def obter_coordenadas_opencage(endereco: str) -> Optional[Tuple[float, float]]:
     api_key = os.getenv("OPENCAGE_API_KEY")
     if not api_key:
         logging.error("Chave da API OpenCage não configurada.")
-        st.error("Chave da API não configurada. Verifique as variáveis de ambiente.")
         return None
 
     url = f"https://api.opencagedata.com/geocode/v1/json?q={endereco}&key={api_key}"
@@ -36,28 +35,19 @@ def obter_coordenadas_opencage(endereco: str) -> Optional[Tuple[float, float]]:
         if 'results' in data and len(data['results']) > 0:
             location = data['results'][0]['geometry']
             return location['lat'], location['lng']
-        else:
-            logging.warning(f"Endereço não encontrado: {endereco}")
-            st.error(f"Não foi possível obter as coordenadas para o endereço: {endereco}.")
     except requests.exceptions.RequestException as e:
         logging.error(f"Erro na requisição à API OpenCage: {e}")
-        st.error(f"Erro ao tentar obter as coordenadas: {e}")
     return None
 
 def calcular_distancia(coords_1: Tuple[float, float], coords_2: Tuple[float, float]) -> float:
     """
     Calcula a distância em metros entre duas coordenadas.
     """
-    if not (-90 <= coords_1[0] <= 90 and -180 <= coords_1[1] <= 180):
-        raise ValueError(f"Coordenadas inválidas: {coords_1}")
-    if not (-90 <= coords_2[0] <= 90 and -180 <= coords_2[1] <= 180):
-        raise ValueError(f"Coordenadas inválidas: {coords_2}")
-    
     return geodesic(coords_1, coords_2).meters
 
 def criar_grafo_tsp(pedidos_df: pd.DataFrame) -> nx.Graph:
     """
-    Cria um grafo (usando NetworkX) para o problema do caixeiro viajante (TSP).
+    Cria um grafo para o problema do caixeiro viajante (TSP).
     """
     G = nx.Graph()
     enderecos = pedidos_df['Endereço Completo'].unique()
@@ -76,71 +66,15 @@ def criar_grafo_tsp(pedidos_df: pd.DataFrame) -> nx.Graph:
     
     return G
 
-def resolver_tsp_genetico(G: nx.Graph) -> Tuple[List[str], float]:
-    """
-    Resolve o TSP utilizando um algoritmo genético simples.
-    Retorna a melhor rota encontrada e sua distância total.
-    """
-    def fitness(route):
-        return sum(G.edges[route[i], route[i + 1]]['weight'] for i in range(len(route) - 1)) + \
-               G.edges[route[-1], route[0]]['weight']
-
-    def mutate(route):
-        i, j = random.sample(range(len(route)), 2)
-        route[i], route[j] = route[j], route[i]
-        return route
-
-    def crossover(route1, route2):
-        size = len(route1)
-        start, end = sorted(random.sample(range(size), 2))
-        child = [None] * size
-        child[start:end] = route1[start:end]
-        pointer = 0
-        for i in range(size):
-            if route2[i] not in child:
-                while child[pointer] is not None:
-                    pointer += 1
-                child[pointer] = route2[i]
-        return child
-
-    def genetic_algorithm(population, generations=100, mutation_rate=0.01):
-        for _ in range(generations):
-            population = sorted(population, key=lambda route: fitness(route))
-            next_generation = population[:2]
-            for _ in range(len(population) // 2 - 1):
-                parents = random.sample(population[:10], 2)
-                child = crossover(parents[0], parents[1])
-                if random.random() < mutation_rate:
-                    child = mutate(child)
-                next_generation.append(child)
-            population = next_generation
-        return population[0], fitness(population[0])
-
-    nodes = list(G.nodes)
-    population = [random.sample(nodes, len(nodes)) for _ in range(100)]
-    best_route, best_distance = genetic_algorithm(population)
-
-    logging.info(f"Melhor rota TSP: {best_route}")
-    st.write(f"Melhor rota TSP: {best_route}")
-    st.write(f"Distância total: {best_distance:.2f} metros")
-    
-    return best_route, best_distance
-
 def criar_mapa(pedidos_df: pd.DataFrame) -> folium.Map:
     """
-    Cria e retorna um mapa Folium com marcadores para cada pedido e para o endereço de partida.
+    Cria e retorna um mapa Folium com marcadores para cada pedido.
     """
     mapa = folium.Map(location=endereco_partida_coords, zoom_start=12)
     for _, row in pedidos_df.iterrows():
-        popup_text = f"<b>Placa: {row['Placa']}</b><br>Endereço: {row['Endereço Completo']}"
         folium.Marker(
             location=[row['Latitude'], row['Longitude']],
-            popup=popup_text,
+            popup=f"Pedido: {row['Endereço Completo']}",
             icon=folium.Icon(color='blue')
         ).add_to(mapa)
-    folium.Marker(
-        location=endereco_partida_coords,
-        popup="Endereço de Partida",
-        icon=folium.Icon(color='red')
-    ).add_to(mapa)
     return mapa
