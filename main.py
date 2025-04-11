@@ -38,7 +38,7 @@ def carregar_dados_pedidos():
 
     # Verifica se alguma coordenada não foi encontrada
     if pedidos_df['Latitude'].isnull().any() or pedidos_df['Longitude'].isnull().any():
-        st.error("Alguns endereços não obtiveram coordenadas. Verifique os dados.")
+        st.warning("Alguns endereços não obtiveram coordenadas. Verifique os dados e tente novamente.")
         return None
 
     return pedidos_df
