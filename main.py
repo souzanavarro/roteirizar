@@ -1,200 +1,168 @@
+import os
+import requests
 import streamlit as st
+import random
+import networkx as nx
+from itertools import permutations
+from geopy.distance import geodesic
+from sklearn.cluster import KMeans
+import folium
 import pandas as pd
-from streamlit_folium import folium_static
-from db.database import Database
-from subir_pedidos import processar_pedidos, salvar_coordenadas
-import ia_analise_pedidos as ia
-from gerenciamento_frota import cadastrar_caminhoes
+import logging
+from typing import List, Tuple, Optional, Dict
 
-def carregar_dados_pedidos():
+# Configuração de logs
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Configurações fixas
+endereco_partida_coords = (-23.0838, -47.1336)  # Coordenadas do ponto de partida
+
+@st.cache_data
+def obter_coordenadas_com_fallback(endereco: str, cache: Dict[str, Tuple[float, float]]) -> Tuple[Optional[float], Optional[float]]:
     """
-    Carrega e processa a planilha de pedidos.
+    Tenta obter coordenadas de um endereço utilizando um cache local como fallback.
     """
-    pedidos_result = processar_pedidos()
-    if pedidos_result is None:
-        st.info("Aguardando envio da planilha de pedidos.")
-        return None
-
-    pedidos_df, coordenadas_salvas = pedidos_result
-
-    # Verifica se a coluna 'Endereço Completo' existe
-    if 'Endereço Completo' not in pedidos_df.columns:
-        st.error("A coluna 'Endereço Completo' está ausente na planilha enviada. Verifique os dados.")
-        return None
-
-    with st.spinner("Obtendo coordenadas..."):
-        try:
-            pedidos_df['Latitude'] = pedidos_df['Endereço Completo'].apply(
-                lambda x: ia.obter_coordenadas_com_fallback(x, coordenadas_salvas)[0] if pd.notnull(x) else None
-            )
-            pedidos_df['Longitude'] = pedidos_df['Endereço Completo'].apply(
-                lambda x: ia.obter_coordenadas_com_fallback(x, coordenadas_salvas)[1] if pd.notnull(x) else None
-            )
-        except Exception as e:
-            st.error(f"Erro ao obter coordenadas: {e}")
-            return None
-
-    salvar_coordenadas(coordenadas_salvas)
-
-    # Verifica se alguma coordenada não foi encontrada
-    if pedidos_df['Latitude'].isnull().any() or pedidos_df['Longitude'].isnull().any():
-        st.warning("Alguns endereços não obtiveram coordenadas. Verifique os dados e tente novamente.")
-        return None
-
-    return pedidos_df
-
-def configurar_roterizacao(pedidos_df, caminhoes_df):
-    """
-    Configura as opções de roteirização usando sliders e checkboxes do Streamlit.
-    """
-    st.markdown("### Configurações para Roteirização")
-    n_clusters = st.slider("Número de regiões para agrupar", min_value=1, max_value=10, value=3)
-    percentual_frota = st.slider("Capacidade da frota a ser usada (%)", min_value=0, max_value=100, value=100)
-    max_pedidos = st.slider("Número máximo de pedidos por veículo", min_value=1, max_value=30, value=12)
-    aplicar_tsp = st.checkbox("Aplicar TSP")
-    aplicar_vrp = st.checkbox("Aplicar VRP")
-
-    if st.button("Executar Roteirização"):
-        executar_roterizacao(pedidos_df, caminhoes_df, n_clusters, percentual_frota, max_pedidos, aplicar_tsp, aplicar_vrp)
-
-def executar_roterizacao(pedidos_df, caminhoes_df, n_clusters, percentual_frota, max_pedidos, aplicar_tsp, aplicar_vrp):
-    """
-    Executa a roteirização com base nas configurações fornecidas.
-    """
-    st.write("Roteirização em execução...")
-
-    # Validações iniciais
-    if 'Latitude' not in pedidos_df.columns or 'Longitude' not in pedidos_df.columns:
-        st.error("As colunas 'Latitude' e 'Longitude' são obrigatórias no DataFrame.")
-        return
+    if endereco in cache:
+        return cache[endereco]
     
-    if pedidos_df[['Latitude', 'Longitude']].isnull().any().any():
-        st.error("Existem valores nulos nas colunas 'Latitude' ou 'Longitude'. Verifique os dados.")
-        return
+    coordenadas = obter_coordenadas_opencage(endereco)
+    if coordenadas:
+        cache[endereco] = coordenadas
+    else:
+        logging.warning(f"Coordenadas não encontradas para o endereço: {endereco}")
+    return coordenadas or (None, None)
 
-    if pedidos_df.empty:
-        st.error("O DataFrame de pedidos está vazio. Verifique os dados.")
-        return
+def obter_coordenadas_opencage(endereco: str) -> Optional[Tuple[float, float]]:
+    """
+    Obtém as coordenadas de um endereço utilizando a API do OpenCage.
+    """
+    api_key = os.getenv("OPENCAGE_API_KEY")
+    if not api_key:
+        logging.error("Chave da API OpenCage não configurada.")
+        return None
 
-    if n_clusters > len(pedidos_df):
-        st.error("O número de clusters não pode ser maior que o número de pedidos.")
-        return
-
-    # Agrupamento por região
+    url = f"https://api.opencagedata.com/geocode/v1/json?q={endereco}&key={api_key}"
     try:
-        pedidos_df = ia.agrupar_por_regiao(pedidos_df, n_clusters)
-    except Exception as e:
-        st.error(f"Erro ao agrupar pedidos por região: {e}")
-        return
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        if 'results' in data and len(data['results']) > 0:
+            location = data['results'][0]['geometry']
+            return location['lat'], location['lng']
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Erro na requisição à API OpenCage: {e}")
+    return None
 
-    # Otimização da frota
-    try:
-        pedidos_df = ia.otimizar_aproveitamento_frota(pedidos_df, caminhoes_df, percentual_frota, max_pedidos, n_clusters)
-    except Exception as e:
-        st.error(f"Erro ao otimizar frota: {e}")
-        return
+def calcular_distancia(coords_1: Tuple[float, float], coords_2: Tuple[float, float]) -> float:
+    """
+    Calcula a distância em metros entre duas coordenadas.
+    """
+    if not (-90 <= coords_1[0] <= 90 and -180 <= coords_1[1] <= 180):
+        raise ValueError(f"Coordenadas inválidas: {coords_1}")
+    if not (-90 <= coords_2[0] <= 90 and -180 <= coords_2[1] <= 180):
+        raise ValueError(f"Coordenadas inválidas: {coords_2}")
+    return geodesic(coords_1, coords_2).meters
 
-    # Aplicação TSP
-    if aplicar_tsp:
-        try:
-            G = ia.criar_grafo_tsp(pedidos_df)
-            melhor_rota, menor_distancia = ia.resolver_tsp_genetico(G)
-            st.write("Melhor rota TSP:")
-            st.write("\n".join(melhor_rota))
-            st.write(f"Menor distância TSP: {menor_distancia}")
-            pedidos_df['Ordem de Entrega TSP'] = pedidos_df['Endereço Completo'].apply(lambda x: melhor_rota.index(x) + 1)
-        except Exception as e:
-            st.error(f"Erro ao resolver o TSP: {e}")
-
-    # Aplicação VRP
-    if aplicar_vrp:
-        try:
-            rota_vrp = ia.resolver_vrp(pedidos_df, caminhoes_df)
-            st.write(f"Melhor rota VRP: {rota_vrp}")
-        except Exception as e:
-            st.error(f"Erro ao resolver o VRP: {e}")
-
-    # Resultados
-    st.write("Dados dos Pedidos:")
-    st.dataframe(pedidos_df)
-    mapa = ia.criar_mapa(pedidos_df)
-    folium_static(mapa)
-
-    # Exportar resultados
-    output_file_path = "roterizacao_resultado.xlsx"
-    pedidos_df.to_excel(output_file_path, index=False)
-    st.write(f"Arquivo salvo: {output_file_path}")
-    with open(output_file_path, "rb") as file:
-        st.download_button(
-            "Baixar planilha",
-            data=file,
-            file_name="roterizacao_resultado.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+def criar_grafo_tsp(pedidos_df: pd.DataFrame) -> nx.Graph:
+    """
+    Cria um grafo para o problema do caixeiro viajante (TSP).
+    """
+    G = nx.Graph()
+    enderecos = pedidos_df['Endereço Completo'].unique()
+    G.add_node("Partida", pos=endereco_partida_coords)
+    
+    for endereco in enderecos:
+        coords = (
+            pedidos_df.loc[pedidos_df['Endereço Completo'] == endereco, 'Latitude'].values[0],
+            pedidos_df.loc[pedidos_df['Endereço Completo'] == endereco, 'Longitude'].values[0]
         )
+        G.add_node(endereco, pos=coords)
+    
+    for (node1, node2) in permutations(["Partida"] + list(enderecos), 2):
+        distancia = calcular_distancia(G.nodes[node1]['pos'], G.nodes[node2]['pos'])
+        G.add_edge(node1, node2, weight=distancia)
+    
+    return G
 
-def main():
-    st.title("Roteirizador de Pedidos")
+def resolver_tsp_genetico(G: nx.Graph) -> Tuple[List[str], float]:
+    """
+    Resolve o TSP utilizando um algoritmo genético simples.
+    """
+    def fitness(route):
+        return sum(G.edges[route[i], route[i + 1]]['weight'] for i in range(len(route) - 1)) + \
+               G.edges[route[-1], route[0]]['weight']
 
-    # Menu lateral
-    menu_opcao = st.sidebar.radio("Menu", options=[
-        "Dashboard",
-        "Cadastro da Frota",
-        "IA Análise",
-        "API REST"
-    ])
+    def mutate(route):
+        i, j = random.sample(range(len(route)), 2)
+        route[i], route[j] = route[j], route[i]
+        return route
 
-    if menu_opcao == "Dashboard":
-        st.header("Dashboard - Envio de Pedidos")
-        st.write("Bem-vindo! Envie a planilha de pedidos para iniciar:")
+    def crossover(route1, route2):
+        size = len(route1)
+        start, end = sorted(random.sample(range(size), 2))
+        child = [None] * size
+        child[start:end] = route1[start:end]
+        pointer = 0
+        for i in range(size):
+            if route2[i] not in child:
+                while child[pointer] is not None:
+                    pointer += 1
+                child[pointer] = route2[i]
+        return child
 
-        pedidos_df = carregar_dados_pedidos()
-        if pedidos_df is not None:
-            # Carrega a frota cadastrada
-            try:
-                caminhoes_df = pd.read_excel("database/caminhoes_frota.xlsx", engine="openpyxl")
-            except FileNotFoundError:
-                st.error("Nenhum caminhão cadastrado. Cadastre a frota na opção 'Cadastro da Frota'.")
-                return
+    def genetic_algorithm(population, generations=100, mutation_rate=0.01):
+        for _ in range(generations):
+            population = sorted(population, key=lambda route: fitness(route))
+            next_generation = population[:2]
+            for _ in range(len(population) // 2 - 1):
+                parents = random.sample(population[:10], 2)
+                child = crossover(parents[0], parents[1])
+                if random.random() < mutation_rate:
+                    child = mutate(child)
+                next_generation.append(child)
+            population = next_generation
+        return population[0], fitness(population[0])
 
-            configurar_roterizacao(pedidos_df, caminhoes_df)
+    nodes = list(G.nodes)
+    population = [random.sample(nodes, len(nodes)) for _ in range(100)]
+    best_route, best_distance = genetic_algorithm(population)
 
-    elif menu_opcao == "Cadastro da Frota":
-        st.header("Cadastro da Frota")
-        if st.checkbox("Cadastrar Caminhões"):
-            cadastrar_caminhoes()
+    logging.info(f"Melhor rota TSP: {best_route}")
+    st.write(f"Melhor rota TSP: {best_route}")
+    st.write(f"Distância total: {best_distance:.2f} metros")
+    
+    return best_route, best_distance
 
-    elif menu_opcao == "IA Análise":
-        st.header("IA Análise")
-        st.write("Envie a planilha de pedidos para análise e edite os dados, se necessário:")
-        pedidos_df = carregar_dados_pedidos()
-        if pedidos_df is not None:
-            st.dataframe(pedidos_df)
-            if st.button("Salvar alterações na planilha"):
-                pedidos_df.to_excel("database/Pedidos.xlsx", index=False)
-                st.success("Planilha editada e salva com sucesso!")
+def criar_mapa(pedidos_df: pd.DataFrame) -> folium.Map:
+    """
+    Cria e retorna um mapa Folium com marcadores para cada pedido.
+    """
+    mapa = folium.Map(location=endereco_partida_coords, zoom_start=12)
+    for _, row in pedidos_df.iterrows():
+        folium.Marker(
+            location=[row['Latitude'], row['Longitude']],
+            popup=f"Pedido: {row['Endereço Completo']}",
+            icon=folium.Icon(color='blue')
+        ).add_to(mapa)
+    return mapa
 
-            with open("database/Pedidos.xlsx", "rb") as file:
-                st.download_button(
-                    "Baixar planilha de Pedidos",
-                    data=file,
-                    file_name="Pedidos.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+def exportar_grafo(grafo: nx.Graph, formato: str = "json") -> str:
+    """
+    Exporta o grafo em formato JSON ou GML.
+    """
+    if formato == "json":
+        return nx.node_link_data(grafo)
+    elif formato == "gml":
+        return nx.generate_gml(grafo)
+    else:
+        raise ValueError("Formato não suportado.")
 
-    elif menu_opcao == "API REST":
-        st.header("Interação com API REST")
-        st.write("Teste os endpoints:")
-        st.markdown("""
-        - **POST /upload**: Faz upload dos arquivos (Pedidos.xlsx, Caminhoes.xlsx, IA.xlsx).
-        - **GET /resultado**: Retorna a solução do algoritmo genético.
-        - **GET /mapa**: Exibe o mapa interativo.
-        """)
-        if st.button("Testar /resultado"):
-            try:
-                resposta = requests.get("http://localhost:5000/resultado")
-                st.json(resposta.json())
-            except Exception as e:
-                st.error(f"Erro na requisição: {e}")
-
-if __name__ == "__main__":
-    main()
+def calcular_metricas_grafo(grafo: nx.Graph) -> dict:
+    """
+    Calcula métricas do grafo, como densidade, diâmetro e grau médio.
+    """
+    return {
+        "densidade": nx.density(grafo),
+        "diâmetro": nx.diameter(grafo) if nx.is_connected(grafo) else None,
+        "grau_médio": sum(dict(grafo.degree()).values()) / grafo.number_of_nodes()
+    }
