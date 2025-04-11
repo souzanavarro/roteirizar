@@ -1,6 +1,6 @@
 import sqlite3
 import logging
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 # Configuração de logs
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -50,13 +50,6 @@ def criar_tabelas() -> None:
 def inserir_pedido(endereco: str, latitude: float, longitude: float, peso_itens: float, ordem_entrega: int) -> None:
     """
     Insere um novo pedido na tabela `pedidos`.
-
-    Args:
-        endereco (str): Endereço do pedido.
-        latitude (float): Latitude do endereço.
-        longitude (float): Longitude do endereço.
-        peso_itens (float): Peso dos itens do pedido.
-        ordem_entrega (int): Ordem de entrega do pedido.
     """
     try:
         with conectar_banco() as conn:
@@ -74,10 +67,6 @@ def inserir_pedido(endereco: str, latitude: float, longitude: float, peso_itens:
 def inserir_caminhao(modelo: str, capacidade: float) -> None:
     """
     Insere um novo caminhão na tabela `frota`.
-
-    Args:
-        modelo (str): Modelo do caminhão.
-        capacidade (float): Capacidade do caminhão.
     """
     try:
         with conectar_banco() as conn:
@@ -95,9 +84,6 @@ def inserir_caminhao(modelo: str, capacidade: float) -> None:
 def consultar_pedidos() -> List[Tuple]:
     """
     Consulta todos os pedidos na tabela `pedidos`.
-
-    Returns:
-        List[Tuple]: Lista de tuplas contendo os registros dos pedidos.
     """
     try:
         with conectar_banco() as conn:
@@ -113,9 +99,6 @@ def consultar_pedidos() -> List[Tuple]:
 def consultar_frota() -> List[Tuple]:
     """
     Consulta todos os caminhões na tabela `frota`.
-
-    Returns:
-        List[Tuple]: Lista de tuplas contendo os registros dos caminhões.
     """
     try:
         with conectar_banco() as conn:
@@ -131,10 +114,6 @@ def consultar_frota() -> List[Tuple]:
 def atualizar_pedido(pedido_id: int, novos_dados: Dict[str, Optional]) -> None:
     """
     Atualiza os dados de um pedido na tabela `pedidos`.
-
-    Args:
-        pedido_id (int): ID do pedido a ser atualizado.
-        novos_dados (Dict[str, Optional]): Dicionário com os campos a serem atualizados.
     """
     try:
         with conectar_banco() as conn:
@@ -157,9 +136,6 @@ def atualizar_pedido(pedido_id: int, novos_dados: Dict[str, Optional]) -> None:
 def deletar_pedido(pedido_id: int) -> None:
     """
     Remove um pedido da tabela `pedidos`.
-
-    Args:
-        pedido_id (int): ID do pedido a ser removido.
     """
     try:
         with conectar_banco() as conn:
