@@ -9,12 +9,12 @@ from sklearn.cluster import KMeans
 import folium
 import pandas as pd
 import logging
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 # Configuração de logs
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Configurações de partida
+# Configurações fixas
 endereco_partida_coords = (-23.0838, -47.1336)  # Coordenadas do ponto de partida
 
 @st.cache_data
@@ -43,6 +43,10 @@ def calcular_distancia(coords_1: Tuple[float, float], coords_2: Tuple[float, flo
     """
     Calcula a distância em metros entre duas coordenadas.
     """
+    if not (-90 <= coords_1[0] <= 90 and -180 <= coords_1[1] <= 180):
+        raise ValueError(f"Coordenadas inválidas: {coords_1}")
+    if not (-90 <= coords_2[0] <= 90 and -180 <= coords_2[1] <= 180):
+        raise ValueError(f"Coordenadas inválidas: {coords_2}")
     return geodesic(coords_1, coords_2).meters
 
 def criar_grafo_tsp(pedidos_df: pd.DataFrame) -> nx.Graph:
@@ -66,6 +70,55 @@ def criar_grafo_tsp(pedidos_df: pd.DataFrame) -> nx.Graph:
     
     return G
 
+def resolver_tsp_genetico(G: nx.Graph) -> Tuple[List[str], float]:
+    """
+    Resolve o TSP utilizando um algoritmo genético simples.
+    """
+    def fitness(route):
+        return sum(G.edges[route[i], route[i + 1]]['weight'] for i in range(len(route) - 1)) + \
+               G.edges[route[-1], route[0]]['weight']
+
+    def mutate(route):
+        i, j = random.sample(range(len(route)), 2)
+        route[i], route[j] = route[j], route[i]
+        return route
+
+    def crossover(route1, route2):
+        size = len(route1)
+        start, end = sorted(random.sample(range(size), 2))
+        child = [None] * size
+        child[start:end] = route1[start:end]
+        pointer = 0
+        for i in range(size):
+            if route2[i] not in child:
+                while child[pointer] is not None:
+                    pointer += 1
+                child[pointer] = route2[i]
+        return child
+
+    def genetic_algorithm(population, generations=100, mutation_rate=0.01):
+        for _ in range(generations):
+            population = sorted(population, key=lambda route: fitness(route))
+            next_generation = population[:2]
+            for _ in range(len(population) // 2 - 1):
+                parents = random.sample(population[:10], 2)
+                child = crossover(parents[0], parents[1])
+                if random.random() < mutation_rate:
+                    child = mutate(child)
+                next_generation.append(child)
+            population = next_generation
+        return population[0], fitness(population[0])
+
+    nodes = list(G.nodes)
+    population = [random.sample(nodes, len(nodes)) for _ in range(100)]
+    best_route, best_distance = genetic_algorithm(population)
+
+    logging.info(f"Melhor rota TSP: {best_route}")
+    st.write(f"Melhor rota TSP: {best_route}")
+    st.write(f"Distância total: {best_distance:.2f} metros")
+    
+    return best_route, best_distance
+
 def criar_mapa(pedidos_df: pd.DataFrame) -> folium.Map:
     """
     Cria e retorna um mapa Folium com marcadores para cada pedido.
@@ -78,3 +131,24 @@ def criar_mapa(pedidos_df: pd.DataFrame) -> folium.Map:
             icon=folium.Icon(color='blue')
         ).add_to(mapa)
     return mapa
+
+def exportar_grafo(grafo: nx.Graph, formato: str = "json") -> str:
+    """
+    Exporta o grafo em formato JSON ou GML.
+    """
+    if formato == "json":
+        return nx.node_link_data(grafo)
+    elif formato == "gml":
+        return nx.generate_gml(grafo)
+    else:
+        raise ValueError("Formato não suportado.")
+
+def calcular_metricas_grafo(grafo: nx.Graph) -> dict:
+    """
+    Calcula métricas do grafo, como densidade, diâmetro e grau médio.
+    """
+    return {
+        "densidade": nx.density(grafo),
+        "diâmetro": nx.diameter(grafo) if nx.is_connected(grafo) else None,
+        "grau_médio": sum(dict(grafo.degree()).values()) / grafo.number_of_nodes()
+    }
