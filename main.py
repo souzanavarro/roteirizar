@@ -17,17 +17,29 @@ def carregar_dados_pedidos() -> Optional[pd.DataFrame]:
     if pedidos_result is None:
         st.info("Aguardando envio da planilha de pedidos.")
         return None
+
     pedidos_df, coordenadas_salvas = pedidos_result
 
+    # Verifica se a coluna 'Endereço Completo' existe
+    if 'Endereço Completo' not in pedidos_df.columns:
+        st.error("A coluna 'Endereço Completo' está ausente na planilha enviada. Verifique os dados.")
+        return None
+
     with st.spinner("Obtendo coordenadas..."):
-        pedidos_df['Latitude'] = pedidos_df['Endereço Completo'].apply(
-            lambda x: ia.obter_coordenadas_com_fallback(x, coordenadas_salvas)[0]
-        )
-        pedidos_df['Longitude'] = pedidos_df['Endereço Completo'].apply(
-            lambda x: ia.obter_coordenadas_com_fallback(x, coordenadas_salvas)[1]
-        )
+        try:
+            pedidos_df['Latitude'] = pedidos_df['Endereço Completo'].apply(
+                lambda x: ia.obter_coordenadas_com_fallback(x, coordenadas_salvas)[0] if pd.notnull(x) else None
+            )
+            pedidos_df['Longitude'] = pedidos_df['Endereço Completo'].apply(
+                lambda x: ia.obter_coordenadas_com_fallback(x, coordenadas_salvas)[1] if pd.notnull(x) else None
+            )
+        except Exception as e:
+            st.error(f"Erro ao obter coordenadas: {e}")
+            return None
+
     salvar_coordenadas(coordenadas_salvas)
 
+    # Verifica se alguma coordenada não foi encontrada
     if pedidos_df['Latitude'].isnull().any() or pedidos_df['Longitude'].isnull().any():
         st.error("Alguns endereços não obtiveram coordenadas. Verifique os dados.")
         return None
