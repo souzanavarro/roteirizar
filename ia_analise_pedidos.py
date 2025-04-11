@@ -18,6 +18,20 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 endereco_partida_coords = (-23.0838, -47.1336)  # Coordenadas do ponto de partida
 
 @st.cache_data
+def obter_coordenadas_com_fallback(endereco: str, cache: Dict[str, Tuple[float, float]]) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Tenta obter coordenadas de um endereço utilizando um cache local como fallback.
+    """
+    if endereco in cache:
+        return cache[endereco]
+    
+    coordenadas = obter_coordenadas_opencage(endereco)
+    if coordenadas:
+        cache[endereco] = coordenadas
+    else:
+        logging.warning(f"Coordenadas não encontradas para o endereço: {endereco}")
+    return coordenadas or (None, None)
+
 def obter_coordenadas_opencage(endereco: str) -> Optional[Tuple[float, float]]:
     """
     Obtém as coordenadas de um endereço utilizando a API do OpenCage.
